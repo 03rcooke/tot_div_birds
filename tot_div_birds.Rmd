@@ -5,26 +5,1093 @@ date: "29/08/2019"
 output: html_document
 ---
 
-```{r setup, include = FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+## Setup required packages
+
+#### devtools: install packages from github
+#### readr: read data
+#### dplyr: data manipulation
+#### tidyr: data manipulation
+#### tibble: data manipulation
+#### purrr: applying functions
+#### jtools: model summary stats
+#### rsq: partial r2
+#### broom: model coefficients
+#### HDInterval: highest density intervals
+#### cowplot: plotting
+#### ggbeeswarm: plotting
+#### scatterpie: plotting
+#### zoo: rolling averages
+#### ggridges: plotting
+
+```{r setup}
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(devtools, readr, dplyr, tidyr, tibble, purrr, jtools, rsq, broom, HDInterval, cowplot, MCMCglmm, zoo, ggbeeswarm, viridis, gganimate, scatterpie)
+
+#devtools::install_github("wilkelab/ggridges")
+library(ggridges)
+
+# set plotting theme
+theme_set(theme_cowplot())
 ```
 
-## R Markdown
+## Load in data
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r data}
+# weigelt
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+# my prepared data
 ```
 
-## Including Plots
+## Modelling
 
-You can also embed plots, for example:
+#### transformations and standardization
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r transform}
+pred_trans_unscaled <- pred %>% 
+  dplyr::mutate_at(vars(Dist, tot_area, SR_GAM, hum), log10) %>% 
+  dplyr::mutate(Elev = log10(Elev + 1)) %>% 
+  dplyr::mutate(sd_area = log10(sd_area + 1)) %>% 
+  dplyr::mutate(res_eff = log10(res_eff + 1)) %>% 
+  dplyr::mutate(ext_spp_np = log10(ext_spp_np + 1)) %>% 
+  dplyr::mutate(end_spp_np = log10(end_spp_np + 1)) %>% 
+  dplyr::mutate_at(vars(no_isl), sqrt) 
+
+pred_trans <- pred_trans_unscaled %>% 
+  dplyr::mutate_at(vars(-Archip_10km, -ext_spp_np), scale) %>% 
+  dplyr::mutate_at(vars(-Archip_10km, -ext_spp_np), as.numeric)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+#### linear model of recorded prehistoric extinct non-passerines
+
+```{r lm}
+m1 <- lm(ext_spp_np ~ Dist + SLMP + Elev + Temp + varT + Prec + varP + SRML + SR_GAM + no_isl + tot_area + sd_area + pa_rodents + end_spp_np + res_eff + hum + tot_area:res_eff, data = pred_trans)
+
+# model summary
+jtools::summ(m1)
+
+# R2 = 0.72
+# Adj R2 = 0.62
+
+# # plot residuals
+# plot(m1)
+
+# partial r2
+rq <- rsq::rsq.partial(m1, type = "sse", adj = FALSE) %>% 
+  data.frame() %>% 
+  dplyr::bind_cols(data.frame(rsq.partial(m1, type = "sse", adj = TRUE))) %>% 
+  dplyr::mutate(partial.rsq_round = round(partial.rsq, digits = 2))
+
+coef_m1 <- broom::tidy(m1, conf.int = TRUE) %>% 
+  dplyr::filter(!term == "(Intercept)") %>% 
+  dplyr::mutate(pos_neg = as.factor(ifelse(estimate > 0, 2, 1))) %>% 
+  dplyr::left_join(rq, by = c("term" = "variable")) %>% 
+  dplyr::mutate(term_neat = c("Isolation distance", "Surrounding landmass", "Elevation", "Temperature", "Temperature variability", "Precipitation", "Precipitation variability", "Mainland plant richness", "Archipelago plant richness", "Number of islands", "Total area", "SD area", "Native rodents", "Endemic non-passerines", "Research effort", "Human arrival", "Total area:Research effort"))
+```
+
+## Extrapolate values
+
+```{r extrapolate}
+# research effort in new zealand
+nz <- pred_trans %>% 
+  dplyr::filter(Archip_10km == "New_Zealand") %>% 
+  dplyr::select(res_eff)
+
+# extrapolate
+ar_extrap <- lapply(1:nrow(pred_trans), function(x) {
+  ar <- pred_trans[x,]$Archip_10km
+  
+  nd <- pred_trans %>% 
+    dplyr::filter(Archip_10km == ar)
+  
+  ext_spp_np <- nd$ext_spp_np
+  
+  delta_res <- nz - nd$res_eff
+  
+  ext_spp_np <- ext_spp_np + delta_res$res_eff * (as.vector(coef(m1)["res_eff"]) + as.vector(coef(m1)["tot_area:res_eff"]) * as.vector(coef(m1)["tot_area"]))
+  
+})
+
+# extrapolate upper confidence bound
+ar_extrap_upp <- lapply(1:nrow(pred_trans), function(x) {
+  ar <- pred_trans[x,]$Archip_10km
+  
+  nd <- pred_trans %>% 
+    dplyr::filter(Archip_10km == ar)
+  
+  ext_spp_np <- nd$ext_spp_np
+  
+  delta_res <- nz - nd$res_eff
+  
+  ext_spp_np <- ext_spp_np + delta_res$res_eff * (confint(m1, level = 0.99)["res_eff", 2] + confint(m1, level = 0.99)["tot_area:res_eff", 2] * confint(m1, level = 0.99)["tot_area", 2])
+  
+})
+
+# extrapolate lower confidence bound
+ar_extrap_low <- lapply(1:nrow(pred_trans), function(x) {
+  ar <- pred_trans[x,]$Archip_10km
+  
+  nd <- pred_trans %>% 
+    dplyr::filter(Archip_10km == ar)
+  
+  ext_spp_np <- nd$ext_spp_np
+  
+  delta_res <- nz - nd$res_eff
+  
+  ext_spp_np <- ext_spp_np + delta_res$res_eff * (confint(m1, level = 0.99)["res_eff", 1] + confint(m1, level = 0.99)["tot_area:res_eff", 1] * confint(m1, level = 0.99)["tot_area", 1])
+  
+  
+})
+
+ar_spp <- cbind(dplyr::select(pred, Archip_10km, ext_spp_np), ar_extrap = as.numeric(ar_extrap), ar_extrap_upp = as.numeric(ar_extrap_upp), ar_extrap_low = as.numeric(ar_extrap_low)) %>% 
+  # recorded and unrecorded prehistoric extinct
+  dplyr::mutate(ar_extrap = (10^ar_extrap)-1) %>%
+  # CI 99%
+  dplyr::mutate(ar_extrap_upp = (10^ar_extrap_upp)-1) %>%
+  dplyr::mutate(ar_extrap_low = (10^ar_extrap_low)-1) %>%
+  # unrecorded prehistoric extinct
+  dplyr::mutate(add_spp = ar_extrap - ext_spp_np) %>% 
+  # CI 99%
+  dplyr::mutate(add_spp_upp = ar_extrap_upp - ext_spp_np) %>%
+  dplyr::mutate(add_spp_low = ar_extrap_low - ext_spp_np)
+```
+
+## Ratio non-passerines to passerines
+
+```{r passerines}
+
+```
+
+## Lower bound
+
+#### description dates for lower bound
+
+```{r}
+
+```
+
+#### lower bound - species description curve
+
+```{r}
+get_mu0_logistic <- function(L, k, x0, x){
+	return( L/(1+exp(-k*(x-x0))) )
+}
+
+sliding_window <- function(i,wsize=0.5){
+	new_i <- i+(runif(1)-0.5)*wsize
+	return(new_i)
+}
+
+multiplier_proposal <- function(i,d=1.1){
+	u <- runif(1)
+	l <- 2*log(d)
+	m <- exp(l*(u-.5))
+ 	ii <- i * m
+	hastings_ratio <- log(m)
+	return( c(ii, hastings_ratio) )
+}
+
+tbl <- read.csv("~/R/R_Projects/total_div/data/accumulation.csv")
+# x <- tbl[,1] - min(tbl[,1])
+# dat <- tbl[,3]
+# maxDat <- max(dat)
+#
+# # init parameters
+# epsilonA <- 2   # error (variance)
+# LA <- maxDat * 10 # maximum of the logistic = 'dy + L'
+# dyA <- 0        # shifts up or down the logistic
+# kA <- 2         # slope
+# x0A <- min(x)   # mid point
+# 
+# mu0 <- get_mu0_logistic(LA, kA, x0A, x) + dyA
+# 
+# likA <- sum(dnorm( dat, mu0, epsilonA, log = TRUE))
+# 
+# res <- NULL
+# 
+# for (it in 0:2000000) {
+# 	L  <- LA
+# 	k  <- kA
+# 	x0 <- x0A
+# 	dy <- dyA
+# 	epsilon <- epsilonA
+# 	hasting <- 0
+# 	r <- runif(5)
+# 	if (r[1] < 0.1) {
+# 		temp <- multiplier_proposal(LA, 1.2)
+# 		L <- temp[1]
+# 		hasting <- hasting + temp[2]
+# 	}
+# 	if (r[2] < 0.1) {
+# 		temp <- multiplier_proposal(kA)
+# 		k <- temp[1]
+# 		hasting <- hasting + temp[2]
+# 	}
+# 	if (r[3] < 0.1) {
+# 		x0 <- sliding_window(x0A, 5)
+# 		if (x0 > max(x)){
+# 			x0 <- max(x) - (x0 - max(x))
+# 		}
+# 	}
+# 	if (r[4] < 0.1) {
+# 		dy <- sliding_window(dyA, 2)
+# 	}
+# 	if (r[5] < 0.1) {
+# 		temp <- multiplier_proposal(epsilon, 1.2)
+# 		epsilon <- temp[1]
+# 		hasting <- hasting+temp[2]
+# 	}
+# 	mu0 <- get_mu0_logistic(L, k, x0, x) + dy
+# 	lik <- sum(dnorm(dat, mu0, epsilon, log = TRUE))
+# 	if (it %% 10000 == 0){
+# 		res <- rbind(res, c(it, likA, LA, kA, x0A, dyA, epsilonA))
+# 	}
+# 	if ((lik - likA + hasting) > log(runif(1))){
+# 		LA  <- L
+# 		kA  <- k
+# 		x0A <- x0
+# 		dyA <- dy
+# 		epsilonA <- epsilon
+# 		likA <- lik
+# 	}
+# }
+# 
+# res <- as.data.frame(res)
+# colnames(res) <- c("it", "likA", "LA", "kA", "x0A", "dyA", 'epsilonA')
+# 
+# out <- list(tbl, dat, res, mu0)
+# 
+# # save: out
+# saveRDS(out, "~/R/R_Projects/total_div/data/low_spp_out.rds")
+
+# load: out
+out <- readRDS("~/R/R_Projects/total_div/data/low_spp_out.rds")
+
+tbl <- out[[1]]
+dat <- out[[2]]
+res <- out[[3]]
+mu0 <- out[[4]]
+
+post <- res[11:nrow(res),]
+
+low_spp_un <-  mean(post$LA)
+
+low_hdi <- HDInterval::hdi(post$LA, credMass = 0.99)
+
+# undescribed birds
+low_spp <- low_spp_un - sum(tbl$n)
+low_spp_lwr <- low_hdi[[1]] - sum(tbl$n)
+low_spp_upr <- low_hdi[[2]] - sum(tbl$n)
+```
+
+## Upper bound
+
+```{r}
+## new world ##
+
+dri_nw_trans <- dri_nw_orig %>% 
+  dplyr::select(-layer) %>% 
+  dplyr::mutate(elev = log10(elev_range + 1)) %>% 
+  dplyr::mutate(Temp = Temp/10) %>% 
+  dplyr::mutate(varT = varT/10) %>% 
+  dplyr::mutate(spp = log10(spp + 1)) %>% 
+  #dplyr::mutate_at(vars(-spp), scale) %>% 
+  # don't scale - means data doesn't match archipelago data
+  dplyr::filter(!is.na(Temp)) %>% 
+  dplyr::filter(!is.na(elev))
+
+um1 <- lm(spp ~ Temp + varT + Prec + varP + elev, data = dri_nw_trans)
+
+# model summary
+jtools::summ(um1)
+
+# 3554 cells
+# R2 = 0.70
+
+# new world archipelagos
+nw_arch <- c("Bahamas_and_Turks_and_Caicos", "California_Channel_Islands", "Chiloe_Archipelago", "Cuba,_Cayman_Islands,_Jamaica", "Gulf_of_California_Islands", "Hispaniola,_Puerto_Rico,_Virgin_Islands", "Leeward_Antilles", "Windward_and_Leeward_Islands", "Bay_and_Yucatan_Islands")
+
+# environmental data for archipelagos 
+env_arch_nw <- pred_trans_unscaled %>% 
+  filter(Archip_10km %in% nw_arch) %>% 
+  dplyr::select(elev = Elev, Temp, Prec, varT, varP)
+
+pred_nw <- pred %>% 
+  filter(Archip_10km %in% nw_arch)
+
+upp_arch_nw <- predict(um1, newdata = env_arch_nw, type = "response", interval = "confidence", level = 0.99) %>% 
+  as.data.frame() %>% 
+  dplyr::bind_cols(dplyr::select(pred_nw, Archip_10km, tot_area)) %>%
+  # grid cell area = 12769
+  dplyr::mutate(gce = tot_area/12769) %>% 
+  dplyr::mutate(log10gce = log10(tot_area/12769)) %>% 
+  dplyr::mutate(upp_spp = (10^fit)-1) %>% 
+  # confidence intervals
+  dplyr::mutate(upp_spp_lwr = (10^lwr)-1) %>% 
+  dplyr::mutate(upp_spp_upr = (10^upr)-1) %>% 
+  dplyr::mutate(upp_spp_ci = upp_spp_upr-upp_spp_lwr) %>% 
+  # species-area relationship
+  # log10(S) = log10(c) + zlog10(A)
+  dplyr::mutate(upp_spp_area = 10^(log10(upp_spp) + (0.25 * (log10gce)))) %>% 
+  # join number of recorded species
+  dplyr::left_join(ant_arch_np) %>% 
+  dplyr::mutate(upp_ext_spp = upp_spp - ant_spp_np) %>% 
+  dplyr::mutate(upp_ext_spp_lwr = upp_spp_lwr - ant_spp_np) %>% 
+  dplyr::mutate(upp_ext_spp_upr = upp_spp_upr - ant_spp_np) %>% 
+  dplyr::mutate(upp_ext_spp_area = upp_spp_area - ant_spp_np, upp_ext_spp) %>% 
+  dplyr::mutate(upp_ext_spp_area_lwr = upp_ext_spp_area - upp_spp_ci, upp_ext_spp_lwr) %>% 
+  dplyr::mutate(upp_ext_spp_area_upr = upp_ext_spp_area + upp_spp_ci, upp_ext_spp_upr)
+
+## old world ##
+
+dri_ol_trans <- dri_ol_orig %>% 
+  dplyr::select(-layer) %>% 
+  dplyr::mutate(elev = log10(elev_range + 1)) %>% 
+  dplyr::mutate(Temp = Temp/10) %>% 
+  dplyr::mutate(varT = varT/10) %>% 
+  dplyr::mutate(spp = log10(spp + 1)) %>% 
+  #dplyr::mutate_at(vars(-spp), scale) %>% 
+  # don't scale - means data doesn't match archipelago data
+  dplyr::filter(!is.na(Temp)) %>% 
+  dplyr::filter(!is.na(elev))
+
+um2 <- lm(spp ~ Temp + varT + Prec + varP + elev, data = dri_ol_trans)
+
+# model summary
+jtools::summ(um2)
+
+# 7782 cells
+# R2 = 0.33
+
+env_arch_ol <- pred_trans_unscaled %>% 
+  filter(!Archip_10km %in% nw_arch) %>% 
+  dplyr::select(elev = Elev, Temp, Prec, varT, varP) 
+
+pred_ol <- pred %>% 
+  filter(!Archip_10km %in% nw_arch)
+
+upp_arch_ol <- predict(um2, newdata = env_arch_ol, type = "response", interval = "confidence", level = 0.99) %>% 
+  as.data.frame() %>% 
+  dplyr::bind_cols(dplyr::select(pred_ol, Archip_10km, tot_area)) %>%
+  # grid cell area = 12769
+  dplyr::mutate(log10gce = log10(tot_area/12769)) %>% 
+  dplyr::mutate(upp_spp = (10^fit)-1) %>% 
+  # confidence intervals
+  dplyr::mutate(upp_spp_lwr = (10^lwr)-1) %>% 
+  dplyr::mutate(upp_spp_upr = (10^upr)-1) %>% 
+  dplyr::mutate(upp_spp_ci = upp_spp_upr - upp_spp_lwr) %>% 
+  # species-area relationship
+  # log10(S) = log10(c) + zlog10(A)
+  dplyr::mutate(upp_spp_area = 10^(log10(upp_spp) + (0.25 * (log10gce)))) %>% 
+  # join number of recorded species
+  dplyr::left_join(ant_arch_np) %>% 
+  dplyr::mutate(upp_ext_spp_area = upp_spp_area - ant_spp_np) %>% 
+  dplyr::mutate(upp_ext_spp_area_lwr = upp_ext_spp_area - upp_spp_ci) %>% 
+  dplyr::mutate(upp_ext_spp_area_upr = upp_ext_spp_area + upp_spp_ci)
+
+upp_arch_all <- dplyr::bind_rows(upp_arch_nw, upp_arch_ol) %>% 
+  dplyr::arrange(Archip_10km)
+
+lim_spp <- dplyr::left_join(dplyr::select(ar_spp, Archip_10km, add_spp:add_spp_low), dplyr::select(upp_arch_all, Archip_10km, upp_ext_spp_area:upp_ext_spp_area_upr)) %>% 
+  dplyr::filter(Archip_10km != "New_Zealand")
+```
+
+## Rejection sampling
+
+```{r}
+# log-distribution
+lim_spp_log <- lim_spp %>%
+  dplyr::mutate_at(vars(-Archip_10km), ~log10(. + 1)) %>%
+  # clip negative numbers to zero
+  dplyr::mutate_if(is.numeric, ~replace(., is.nan(.), 0))
+
+# function to extract values from one of 200 uniform distributions
+val <- function(quan) {
+  num <- ceiling(runif(1, min = 2, max = 201))
+  
+  runif(1, min = quan[num - 1], max = quan[num])
+  
+}
+
+# rejection sampling function
+acc_arch <- function(ar, po) {
+  
+  # subset data
+  dat <- dplyr::filter(lim_spp_log, Archip_10km == ar)
+  
+  # predicted
+  
+  # quantiles
+  quan_pred <- quantile(c(dat$add_spp_low, dat$add_spp_upp), probs = seq(0, 1, 0.005))
+  
+  # sample
+  samp_pred <- replicate(po, val(quan = quan_pred), simplify = TRUE)
+  
+  # upper bound
+  
+  # quantiles
+  quan_upp <- quantile(c(dat$upp_ext_spp_area_lwr, dat$upp_ext_spp_area_upr), probs = seq(0, 1, 0.005))
+  
+  # sample
+  samp_upp <- replicate(po, val(quan = quan_upp), simplify = TRUE)
+  
+  # accept predicted values less than upper bound
+  acc <- samp_pred[samp_pred <= samp_upp]
+  
+  # dataframes
+  dat_pred <- as.data.frame(samp_pred)
+  names(dat_pred) <- ar
+  dat_upp <- as.data.frame(samp_upp)
+  names(dat_upp) <- ar
+  dat_acc <- as.data.frame(acc)
+  names(dat_acc) <- ar
+  
+  return(list(dat_pred, dat_upp, dat_acc))
+  
+}
+
+# each archipelago
+
+a <- acc_arch(ar = "Andaman_and_Nicobar_Islands", po = 2000)
+b <- acc_arch(ar = "Auckland_Islands", po = 3000) # clipped
+c <- acc_arch(ar = "Austral_Islands", po = 6000) # clipped
+d <- acc_arch(ar = "Azores", po = 3000) # clipped
+e <- acc_arch(ar = "Bahamas_and_Turks_and_Caicos", po = 2000)
+e2 <- acc_arch(ar = "Balearic_Islands", po = 5000) # clipped
+f <- acc_arch(ar = "Banaba_Island_and_Nauru", po = 5000) # clipped
+g <- acc_arch(ar = "Bay_and_Yucatan_Islands", po = 4000) # clipped
+h <- acc_arch(ar = "Bismarck_Archipelago", po = 2000)
+i <- acc_arch(ar = "Bonin_Islands", po = 6000) # clipped
+j <- acc_arch(ar = "California_Channel_Islands", po = 6000) # clipped
+k <- acc_arch(ar = "Canary_and_Madeira_Islands", po = 4000) # clipped
+l <- acc_arch(ar = "Caroline_Islands", po = 4000) # clipped
+m <- acc_arch(ar = "Chiloe_Archipelago", po = 2000) # 0
+m[[3]] <- data.frame(Chiloe_Archipelago = rep(0, 2000))
+n <- acc_arch(ar = "Comoro_Islands", po = 2000)
+o <- acc_arch(ar = "Cook_Islands", po = 6000) # clipped
+p <- acc_arch(ar = "Corsica,_Sardinia,_Sicily", po = 2000)
+q <- acc_arch(ar = "Cuba,_Cayman_Islands,_Jamaica", po = 2000)
+r <- acc_arch(ar = "Cyprus", po = 2000)
+s <- acc_arch(ar = "Derawan_Islands", po = 50000) # clipped
+t <- acc_arch(ar = "Easter_Island", po = 8000) # clipped
+u <- acc_arch(ar = "Fiji_Islands", po = 3000) # clipped
+v <- acc_arch(ar = "Gambier_Islands", po = 30000) # clipped
+w <- acc_arch(ar = "Gilbert_Islands", po = 3500) # clipped
+x <- acc_arch(ar = "Greek_Islands", po = 2000)
+y <- acc_arch(ar = "Gulf_of_California_Islands", po = 3500) #clipped
+z <- acc_arch(ar = "Hawaii", po = 2000)
+aa <- acc_arch(ar = "Hispaniola,_Puerto_Rico,_Virgin_Islands", po = 2000)
+ab <- acc_arch(ar = "Izu_Islands", po = 4000) # clipped
+ac <- acc_arch(ar = "Kermadec_Islands", po = 20000) # clipped
+ad <- acc_arch(ar = "Kosrae_and_Pohnpei", po = 2000)
+ae <- acc_arch(ar = "Kurile_Islands", po = 3000) # clipped
+af <- acc_arch(ar = "Laccadive_and_Maldives", po = 15000) # clipped
+ag <- acc_arch(ar = "Leeward_Antilles", po = 15000) # clipped
+ah <- acc_arch(ar = "Lesser_Sunda_Islands", po = 2000)
+ai <- acc_arch(ar = "Line_Islands", po = 12000) # clipped
+aj <- acc_arch(ar = "Louisiade_Archipelago", po = 3000) # clipped
+ak <- acc_arch(ar = "Madagascar", po = 2000)
+al <- acc_arch(ar = "Maluku_Islands", po = 2000)
+am <- acc_arch(ar = "Mariana_Islands", po = 8000) # clipped
+an <- acc_arch(ar = "Marquesas", po = 15000) # clipped
+ao <- acc_arch(ar = "Marshall_Islands", po = 8000) # clipped
+ap <- acc_arch(ar = "New_Caledonia", po = 2000)
+aq <- acc_arch(ar = "New_Hebrides", po = 2000)
+as <- acc_arch(ar = "Niue_and_Tonga_Islands", po = 8000) # clipped
+as2 <- acc_arch(ar = "Norfolk_Island", po = 10000) # clipped
+at <- acc_arch(ar = "Palau_Islands_and_Yap", po = 5000) # clipped
+au <- acc_arch(ar = "Philippines_and_Taiwanese_Islands", po = 2000)
+av <- acc_arch(ar = "Phoenix_Islands", po = 20000) # clipped
+aw <- acc_arch(ar = "Pitcairn_Islands", po = 50000) # clipped
+ax <- acc_arch(ar = "Rotuma_and_Tuvalu_Islands", po = 5000) # clipped
+ay <- acc_arch(ar = "Ryukyu_Islands", po = 2000)
+az <- acc_arch(ar = "Samoan_Islands", po = 2000)
+ba <- acc_arch(ar = "Schouten_Islands", po = 4000) # clipped
+bb <- acc_arch(ar = "Sea_of_Japan", po = 30000) # clipped
+bc <- acc_arch(ar = "Society_Islands", po = 3000) # clipped
+bd <- acc_arch(ar = "Socotra_and_Khuriya_Muriya_Islands", po = 8000) # clipped
+be <- acc_arch(ar = "Solomon_Islands", po = 2000)
+bf <- acc_arch(ar = "Sulawesi", po = 2000)
+bg <- acc_arch(ar = "Sumatran_Islands", po = 3000) # clipped
+bh <- acc_arch(ar = "Tuamotu_Archipelago", po = 5000) # clipped
+bh2 <- acc_arch(ar = "Wake_Island", po = 14000) # clipped
+bi <- acc_arch(ar = "Wallis_and_Futuna", po = 4000) # clipped
+bj <- acc_arch(ar = "Windward_and_Leeward_Islands", po = 2000)
+bk <- acc_arch(ar = "Zanzibar_Archipelago", po = 26000) # clipped
+
+# predicted truncated
+all_pred <- qpcR:::cbind.na(a[[3]], b[[3]], c[[3]], d[[3]], e[[3]], e2[[3]], f[[3]], g[[3]], h[[3]], i[[3]], j[[3]], k[[3]], l[[3]], m[[3]], n[[3]], o[[3]], p[[3]], q[[3]], r[[3]], s[[3]], t[[3]], u[[3]], v[[3]], w[[3]], x[[3]], y[[3]], z[[3]], aa[[3]], ab[[3]], ac[[3]], ad[[3]], ae[[3]], af[[3]], ag[[3]], ah[[3]], ai[[3]], aj[[3]], ak[[3]], al[[3]], am[[3]], an[[3]], ao[[3]], ap[[3]], aq[[3]], as[[3]], as2[[3]], at[[3]], au[[3]], av[[3]], aw[[3]], ax[[3]], ay[[3]], az[[3]], ba[[3]], bb[[3]], bc[[3]], bd[[3]], be[[3]], bf[[3]], bg[[3]], bh[[3]], bh2[[3]], bi[[3]], bj[[3]], bk[[3]])
+
+# convert to actual species and calculate total
+all_pred_spp_wide <- all_pred %>% 
+  dplyr::mutate_all(~(10^.)-1) %>%  
+  dplyr::mutate(tot = rowSums(.)) %>% 
+  dplyr::filter(!is.na(tot))
+
+# lower bound rejection sampling
+# sample from distribution of lower bound
+quan_low_log <- quantile(c(log10(low_spp_lwr + 1), log10(low_spp_upr + 1)), probs = seq(0, 1, 0.005))
+samp_low_log <- replicate(nrow(all_pred_spp_wide), val(quan = quan_low_log), simplify = TRUE)
+
+samp_low <- (10^samp_low_log)-1
+
+samp_low <- as.data.frame(samp_low)
+
+all_pred_spp_low <- all_pred_spp_wide %>% 
+  dplyr::bind_cols(samp_low) %>% 
+  dplyr::filter(tot > samp_low) %>% 
+  dplyr::slice(1:1000)
+
+all_pred_spp <- dplyr::select(all_pred_spp_low, -samp_low) %>% 
+  tidyr::gather(Archip_10km, spp) %>% 
+  dplyr::mutate(dist = "pred") %>% 
+  # add neat archipelago names
+  dplyr::full_join(dplyr::filter(arch, !Archip_10km_under == "New_Zealand"), by = c("Archip_10km" = "Archip_10km_under"))
+
+# medians
+all_spp_med <- all_pred_spp %>% 
+  dplyr::filter(!Archip_10km == "tot") %>% 
+  dplyr::group_by(Archip_10km_neat) %>% 
+  dplyr::summarise_at(vars(spp), list(min = min, median = median, max = max)) %>% 
+  dplyr::arrange(median) %>% 
+  dplyr::left_join(dplyr::select(arch, Archip_10km, Archip_10km_under, Archip_10km_neat))
+
+# predicted distributions (untruncated)
+all_pred_orig <- qpcR:::cbind.na(a[[1]], b[[1]], c[[1]], d[[1]], e[[1]], e2[[1]], f[[1]], g[[1]], h[[1]], i[[1]], j[[1]], k[[1]], l[[1]], m[[1]], n[[1]], o[[1]], p[[1]], q[[1]], r[[1]], s[[1]], t[[1]], u[[1]], v[[1]], w[[1]], x[[1]], y[[1]], z[[1]], aa[[1]], ab[[1]], ac[[1]], ad[[1]], ae[[1]], af[[1]], ag[[1]], ah[[1]], ai[[1]], aj[[1]], ak[[1]], al[[1]], am[[1]], an[[1]], ao[[1]], ap[[1]], aq[[1]], as[[1]], as2[[1]], at[[1]], au[[1]], av[[1]], aw[[1]], ax[[1]], ay[[1]], az[[1]], ba[[1]], bb[[1]], bc[[1]], bd[[1]], be[[1]], bf[[1]], bg[[1]], bh[[1]], bh2[[1]], bi[[1]], bj[[1]], bk[[1]]) %>%
+  dplyr::mutate_all(~(10^.)-1) %>%
+  dplyr::mutate(tot = rowSums(.)) %>%
+  dplyr::slice(1:1000) %>%
+  tidyr::gather(Archip_10km, spp) %>%
+  dplyr::mutate(dist = "pred_orig") %>%
+  # add neat archipelago names
+  dplyr::full_join(dplyr::filter(arch, !Archip_10km_under == "New_Zealand"), by = c("Archip_10km" = "Archip_10km_under"))
+
+all_spp_med_pred_orig <- all_pred_orig %>% 
+  dplyr::filter(!Archip_10km == "tot") %>% 
+  dplyr::group_by(Archip_10km_neat) %>% 
+  dplyr::summarise_at(vars(spp), list(min = min, median = median, max = max)) %>% 
+  dplyr::arrange(median) %>% 
+  dplyr::left_join(dplyr::select(arch, Archip_10km, Archip_10km_under, Archip_10km_neat))
+  
+# upper bound distributions
+all_upp <- qpcR:::cbind.na(a[[2]], b[[2]], c[[2]], d[[2]], e[[2]], e2[[2]], f[[2]], g[[2]], h[[2]], i[[2]], j[[2]], k[[2]], l[[2]], m[[2]], n[[2]], o[[2]], p[[2]], q[[2]], r[[2]], s[[2]], t[[2]], u[[2]], v[[2]], w[[2]], x[[2]], y[[2]], z[[2]], aa[[2]], ab[[2]], ac[[2]], ad[[2]], ae[[2]], af[[2]], ag[[2]], ah[[2]], ai[[2]], aj[[2]], ak[[2]], al[[2]], am[[2]], an[[2]], ao[[2]], ap[[2]], aq[[2]], as[[2]], as2[[2]], at[[2]], au[[2]], av[[2]], aw[[2]], ax[[2]], ay[[2]], az[[2]], ba[[2]], bb[[2]], bc[[2]], bd[[2]], be[[2]], bf[[2]], bg[[2]], bh[[2]], bh2[[2]], bi[[2]], bj[[2]], bk[[2]]) %>%
+  dplyr::mutate_all(~(10^.)-1) %>%
+  dplyr::mutate(tot = rowSums(.)) %>%
+  dplyr::slice(1:1000) %>%
+  tidyr::gather(Archip_10km, spp) %>%
+  dplyr::mutate(dist = "upp") %>%
+  # add neat archipelago names
+    dplyr::full_join(dplyr::filter(arch, !Archip_10km_under == "New_Zealand"), by = c("Archip_10km" = "Archip_10km_under"))
+
+all_spp <- dplyr::bind_rows(all_pred_orig, all_upp) %>% 
+  # convert to factor for plotting and order
+  dplyr::mutate(Archip_10km_neat = forcats::fct_relevel(as.factor(Archip_10km_neat), all_spp_med$Archip_10km_neat))
+
+#### integers and passerines
+
+# function for probability based rounding
+prob_ro <- function(ro) {
+  ifelse(floor(ro) + runif(n(), 0, 1) < ro, floor(ro) + 1, floor(ro))
+}
+
+# prehistoric extinct birds
+
+# new zealand
+nz_run <- data.frame(Archip_10km = rep("New_Zealand", 1000), spp = rep(0, 1000), dist = rep("pred", 1000), Archip_10km.y = rep("New Zealand", 1000), Archip_10km_neat = rep("New Zealand", 1000), run = 1:1000, pass_spp = rep(0, 1000), ext_spp_np = rep(ext_pre_arch_np[ext_pre_arch_np$Archip_10km == "New Zealand",]$ext_spp_np[1], 1000), ext_spp_pass = rep(ext_pre_arch_pass[ext_pre_arch_pass$Archip_10km == "New Zealand",]$ext_spp_pass[1], 1000))
+
+all_spp_int <- all_pred_spp %>% 
+  dplyr::filter(!Archip_10km == "tot") %>% 
+  # add simulation run
+  dplyr::mutate(run = rep(1:1000, (nrow(all_pred_spp) - 1000) / 1000)) %>% 
+  # round to integer based on probability
+  dplyr::mutate_at(vars(spp), .funs =  prob_ro) %>%   
+  # add column for recorded prehistoric extinct non-passerines
+  dplyr::left_join(dplyr::select(ext_pre_arch_np, Archip_10km, ext_spp_np), by = c("Archip_10km.y" = "Archip_10km")) %>% 
+  # add column for recorded prehistoric extinct passerines
+  dplyr::left_join(dplyr::select(ext_pre_arch_pass, Archip_10km, ext_spp_pass), by = c("Archip_10km.y" = "Archip_10km")) %>% 
+  # add column for endemic (extant, possibly extinct, historic extinct) non-passerines
+  dplyr::left_join(end_arch_np, by = c("Archip_10km.y" = "Archip_10km")) %>% 
+  # add column for endemic passerines
+  dplyr::left_join(end_arch_pass, by = c("Archip_10km.y" = "Archip_10km")) %>% 
+  # replace nas with zero
+  dplyr::mutate_if(is.numeric, ~ifelse(is.na(.), 0, .)) %>% 
+  # non-passerines
+  dplyr::mutate(all_np = spp + ext_spp_np + end_spp_np) %>% 
+  # passerines
+  dplyr::mutate(all_pass = ext_spp_pass + end_spp_pass)
+
+# estimate number of passerines based on probability
+all_spp_pre_kno_all_int <- all_spp_int %>% 
+  # archipelago specific
+  #dplyr::left_join(dplyr::select(pass_ratio_pred, Archip_10km, pass_per_pred)) %>% 
+  # global
+  dplyr::mutate(all_spp_est = (10 * all_np) / ((1 - pass_prob) * 10)) %>% 
+  dplyr::mutate(pass_spp = purrr::pmap(list(x = all_spp_est), ~ sum(rbinom(.x, 1, pass_prob)))) %>% 
+  tidyr::unnest() %>% 
+  dplyr::mutate(pass_spp = pass_spp - all_pass) %>% 
+  dplyr::mutate(pass_spp = ifelse(pass_spp < 0, 0, pass_spp)) %>% 
+  # add new zealand
+  dplyr::bind_rows(nz_run) %>% 
+  # number of prehistoric recorded and unrecorded extinct non-passerines
+  dplyr::mutate(spp_kno_np = spp + ext_spp_np) %>% 
+  # number of prehistoric recorded and unrecorded extinct passerines
+  dplyr::mutate(spp_kno_pass = pass_spp + ext_spp_pass) %>% 
+  # number of prehistoric recorded and unrecorded birds
+  dplyr::mutate(spp_kno_all = spp_kno_np + spp_kno_pass)
+```
+
+#### Extinction chronology
+
+```{r}
+# add uncertainty to colonization dates
+colz_uncert <- colz %>% 
+  # average proportional uncertainty
+  dplyr::mutate(hum_range = hum_low - hum_upp) %>% 
+  dplyr::mutate(hum_uncert = hum_range / hum) %>% 
+  dplyr::mutate(hum_low = ifelse(is.na(hum_low), hum + (mean(.$hum_uncert, na.rm = TRUE) * hum), hum_low)) %>% 
+  dplyr::mutate(hum_upp = ifelse(is.na(hum_upp), hum - (mean(.$hum_uncert, na.rm = TRUE) * hum), hum_upp)) 
+
+# rate - half-life of 100 years
+rate <- -log(0.5)/100
+
+# point to truncate exponential - 90% of extinctions within 332 years
+trunc <- -log(1/10)/rate
+
+# truncated exponential
+exp_trunc <- rexp(100000000, rate = rate)
+exp_trunc <- exp_trunc[exp_trunc < trunc]
+
+m <- 10000000
+x <- seq_along(exp_trunc)
+exp_trunc_split <- split(exp_trunc, ceiling(x / m))
+
+# truncated exponential - Falklands only
+exp_trunc_falkland <- exp_trunc_split[[6]]
+exp_trunc_falkland <- exp_trunc_falkland[exp_trunc_falkland < colz_uncert[colz_uncert$Archip == "Falkland Islands",]$hum]
+# truncate at 260 years for Falklands (up to 1950)
+exp_trunc_falkland2 <- exp_trunc_split[[8]]
+exp_trunc_falkland2 <- exp_trunc_falkland2[exp_trunc_falkland2 < colz_uncert[colz_uncert$Archip == "Falkland Islands",]$hum]
+# truncate at 260 years for Falklands (up to 1950)
+
+# human settlement of archipelagos
+ex_da <- all_spp_pre_kno_all_int %>% 
+  dplyr::left_join(colz_uncert, by = c("Archip_10km.y" = "Archip")) %>%
+  # human first arrival from uniform distribution of dates - archipelago level
+  dplyr::mutate(hum_unif = purrr::pmap(list(x = hum_upp, y = hum_low), ~ runif(1, .x, .y))) %>% 
+  tidyr::unnest() %>% 
+  dplyr::select(Archip_10km, run, spp, pass_spp, ext_spp_np, ext_spp_pass, hum_unif)
+
+# unrecorded
+
+ex_da_un_np <- ex_da %>% 
+  # create row for every species, keep count column
+  tidyr::uncount(spp, .remove = FALSE) %>%
+  # extinction dates from truncated exponential - species level
+  dplyr::mutate(pred_date = hum_unif - exp_trunc_split[[1]][1:n()]) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_un") %>% 
+  # order
+  dplyr::mutate(ord = "np")
+
+ex_da_un_pass <- ex_da %>% 
+  # create row for every species, keep count column
+  tidyr::uncount(pass_spp, .remove = FALSE) %>%
+  # extinction dates from truncated exponential - species level
+  dplyr::mutate(pred_date = hum_unif - exp_trunc_split[[3]][1:n()]) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_un") %>% 
+  # order
+  dplyr::mutate(ord = "pass")
+
+# recorded - with species names
+
+# prehistoric extinct non-passerines
+ext_pre_np_spid <- ext_pre_np %>% 
+  dplyr::left_join(ext_isl, by = "islandName") %>%
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  dplyr::group_by(Archip_10km) %>% 
+  dplyr::mutate(sp_id = 1:n())
+
+ex_da_kno_np <- ex_da %>% 
+  # create row for every species, keep count column
+  tidyr::uncount(ext_spp_np, .remove = FALSE) %>%
+  # extinction dates from truncated exponential - species level
+  dplyr::mutate(pred_date = hum_unif - exp_trunc_split[[2]][1:n()]) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_kno") %>% 
+  # order
+  dplyr::mutate(ord = "np") %>% 
+  # add species names
+  dplyr::group_by(Archip_10km, run) %>% 
+  dplyr::mutate(sp_id = 1:n()) %>% 
+  dplyr::left_join(ext_pre_np_spid, by = c("Archip_10km", "sp_id")) %>% 
+  dplyr::select(Archip_10km:ord, species, commonName)
+
+# prehistoric extinct passerines
+ext_pre_pass_spid <- ext_pre_pass %>% 
+  dplyr::left_join(ext_isl, by = "islandName") %>%
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  dplyr::group_by(Archip_10km) %>% 
+  dplyr::mutate(sp_id = 1:n())
+
+ex_da_kno_pass <- ex_da %>% 
+  # create row for every species, keep count column
+  tidyr::uncount(ext_spp_pass, .remove = FALSE) %>%
+  # extinction dates from truncated exponential - species level
+  dplyr::mutate(pred_date = hum_unif - exp_trunc_split[[4]][1:n()]) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_kno") %>% 
+  # order
+  dplyr::mutate(ord = "pass") %>% 
+  # add species names
+  dplyr::group_by(Archip_10km, run) %>% 
+  dplyr::mutate(sp_id = 1:n()) %>% 
+  dplyr::left_join(ext_pre_pass_spid, by = c("Archip_10km", "sp_id")) %>% 
+  dplyr::select(Archip_10km:ord, species, commonName)
+
+# combine datasets
+ex_da <- dplyr::bind_rows(ex_da_un_np, ex_da_kno_np, ex_da_un_pass, ex_da_kno_pass)
+
+# historic extinct found as fossils - 18 species
+hist_ins <- cont_all %>% 
+  # insular species
+  dplyr::filter(ins.cat == "insular") %>% 
+  # prehistoric extinct
+  dplyr::filter(mod_date == 0) %>% 
+  # order
+  dplyr::mutate(ord_pass = ifelse(Order == "Passeriformes", "pass", "np")) %>% 
+  # number of extinct non-passerines and passerines per archipelago
+  dplyr::count(Archip_10km, ord_pass) %>% 
+  tidyr::spread(ord_pass, n, fill = 0) %>% 
+  # join colonization
+  dplyr::left_join(colz_uncert, by = c("Archip_10km" = "Archip")) %>% 
+  # replicate dataframe 1000 times
+  dplyr::slice(rep(1:n(), each = 1000)) %>% 
+  # add run identifier
+  dplyr::mutate(run = rep(1:1000, n()/1000)) %>% 
+  # human first arrival from uniform distribution of dates
+  dplyr::mutate(hum_unif = purrr::pmap(list(x = hum_upp, y = hum_low), ~ runif(1, .x, .y))) %>% 
+  tidyr::unnest()
+
+hist_ins_np_spid <- cont_all %>% 
+  # insular species
+  dplyr::filter(ins.cat == "insular") %>% 
+  # prehistoric extinct (actually historic)
+  dplyr::filter(mod_date == 0) %>% 
+  dplyr::filter(Order != "Passeriformes") %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  dplyr::group_by(Archip_10km) %>% 
+  dplyr::mutate(sp_id = 1:n())
+
+hist_ins_np <- hist_ins %>% 
+  # create row for every non-passerine species
+  tidyr::uncount(np) %>% 
+  dplyr::mutate(pred_date = ifelse(!Archip_10km == "Falkland Islands", hum_unif - exp_trunc_split[[5]][1:n()], hum_unif - exp_trunc_falkland[1:n()])) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  # distribution
+  dplyr::mutate(dist = "hist_kno") %>% 
+  # order
+  dplyr::mutate(ord = "np") %>% 
+  # add species names
+  dplyr::group_by(Archip_10km, run) %>% 
+  dplyr::mutate(sp_id = 1:n()) %>% 
+  dplyr::left_join(hist_ins_np_spid, by = c("Archip_10km", "sp_id")) %>% 
+  dplyr::select(Archip_10km, run, hum_unif, pred_date, dist, ord, species, commonName)
+
+hist_ins_pass_spid <- cont_all %>% 
+  # insular species
+  dplyr::filter(ins.cat == "insular") %>% 
+  # prehistoric extinct (actually historic)
+  dplyr::filter(mod_date == 0) %>% 
+  dplyr::filter(Order == "Passeriformes") %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  dplyr::group_by(Archip_10km) %>% 
+  dplyr::mutate(sp_id = 1:n())
+
+hist_ins_pass <- hist_ins %>% 
+  # create row for every passerine species
+  tidyr::uncount(pass) %>% 
+  dplyr::mutate(pred_date = ifelse(!Archip_10km == "Falkland Islands", hum_unif - exp_trunc_split[[7]][1:n()], hum_unif - exp_trunc_falkland2[1:n()])) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  # distribution
+  dplyr::mutate(dist = "hist_kno") %>% 
+  # order
+  dplyr::mutate(ord = "pass") %>% 
+  # add species names
+  dplyr::group_by(Archip_10km, run) %>% 
+  dplyr::mutate(sp_id = 1:n()) %>% 
+  dplyr::left_join(hist_ins_pass_spid, by = c("Archip_10km", "sp_id")) %>% 
+  dplyr::select(Archip_10km, run, hum_unif, pred_date, dist, ord, species, commonName)
+
+# combine datasets
+hist_ins <- dplyr::bind_rows(hist_ins_np, hist_ins_pass)
+
+# historic extinct birds with dates
+dates_hist_ext <- dplyr::select(ext_hist_all, species, commonName, Order, extinctionDate, date_prefix, mod_date, ins.cat, islandName) %>% 
+  # remove 18 badly dated fossil species
+  dplyr::filter(mod_date == 1) %>% 
+  dplyr::left_join(dplyr::select(ext_isl_orig, islandName, pw13.archip_extra_10km)) %>%
+  dplyr::rename(Archip_10km = pw13.archip_extra_10km) %>% 
+  # get extinction date from string
+  dplyr::rowwise() %>% 
+  dplyr::mutate(ext_numb_low = unlist(stringr::str_match_all(extinctionDate, "[0-9]+"))[1]) %>% 
+  dplyr::mutate(ext_numb_upp = unlist(stringr::str_match_all(extinctionDate, "[0-9]+"))[2]) %>% 
+  dplyr::mutate_at(vars(contains("ext_numb")), as.numeric) %>% 
+  as.data.frame() %>%  
+  # extract year of extinction
+  dplyr::mutate(ext_date_low = ifelse(date_prefix == "BP", (1950 - ext_numb_low), NA)) %>% 
+  dplyr::mutate(ext_date_upp = ifelse(date_prefix == "BP", (1950 - ext_numb_upp), NA)) %>% 
+  dplyr::mutate(ext_date_low = ifelse(date_prefix == "CE", ext_numb_low, ext_date_low)) %>% 
+  dplyr::mutate(ext_date_upp = ifelse(date_prefix == "CE", ext_numb_upp, ext_date_upp)) %>% 
+  dplyr::mutate(ext_date_min = purrr::pmap(list(x = ext_date_low, y = ext_date_upp), ~ min(.x, .y, na.rm = TRUE))) %>% 
+  dplyr::mutate(ext_date_max = purrr::pmap(list(x = ext_date_low, y = ext_date_upp), ~ max(.x, .y, na.rm = TRUE))) %>% 
+  tidyr::unnest() %>% 
+  # identify recorded (no uncertainty) extinction dates
+  dplyr::mutate(ext_date = ifelse(is.na(ext_date_upp), ext_date_low, NA)) %>%
+  # unique species
+  dplyr::distinct(species, .keep_all = TRUE) %>% 
+  # assign major archipelagos to multi-archipelago species
+  dplyr::mutate(Archip_10km = ifelse(species == "Aplonis fusca", "Norfolk_Island", Archip_10km)) %>% 
+  dplyr::mutate(Archip_10km = ifelse(species == "Ara tricolor", "Cuba, Cayman Islands, Jamaica", Archip_10km)) %>%   
+  dplyr::mutate(Archip_10km = ifelse(species == "Eclectus infectus", "New Hebrides", Archip_10km)) %>% 
+  dplyr::mutate(Archip_10km = ifelse(species == "Cygnus sumnerensis", "Cuba, Cayman Islands, Jamaica", Archip_10km)) %>% 
+  # continents
+  # Palearctic
+  dplyr::mutate(Archip_10km = ifelse(islandName %in% c("Spain", "Sicily", "Malta", "Asia", "China", "NorthAtlantic", "Europe"), "Palearctic", Archip_10km)) %>% 
+  # Nearctic
+  dplyr::mutate(Archip_10km = ifelse(islandName %in% c("NorthAmerica", "USA", "California", "Mexico", "Labrador", "Guatemala", "Bering"), "Nearctic", Archip_10km)) %>%
+  # Neotropic
+  dplyr::mutate(Archip_10km = ifelse(islandName %in% c("SouthAmerica", "Peru", "Argentina", "Uruguay", "Brazil", "Colombia"), "Neotropic", Archip_10km)) %>%
+  # Australasia
+  dplyr::mutate(Archip_10km = ifelse(islandName %in% c("Australia", "Tasmania"), "Australasia", Archip_10km)) %>%
+  # Indo-Malay
+  dplyr::mutate(Archip_10km = ifelse(islandName %in% c("Hainan"), "Indo-Malay", Archip_10km)) %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  # distribution
+  dplyr::mutate(dist = "hist_kno") %>% 
+  # order
+  dplyr::mutate(ord = ifelse(Order == "Passeriformes", "pass", "np"))
+
+# possibly extinct species listed as extinct - 5 species
+dates_hist_pex <- pex_orig %>% 
+  dplyr::filter(iucn == "EX" | iucn == "EW") %>% 
+  dplyr::mutate(ext_date_min = year_last_recorded) %>% 
+  dplyr::mutate(ext_date_max = year_last_recorded) %>% 
+  dplyr::mutate(ext_date = year_last_recorded) %>% 
+  # distribution
+  dplyr::mutate(dist = "hist_kno") %>% 
+  # order
+  dplyr::mutate(ord = ifelse(order == "Passeriformes", "pass", "np")) %>% 
+  dplyr::select(species = binomial, commonName = common_name, Archip_10km, ext_date_min, ext_date_max, ext_date, dist, ord)
+
+# combine historic extinct species - 183 species
+dates_hist_ext <- dplyr::bind_rows(dates_hist_ext, dates_hist_pex)
+
+dates_hist_ext_long <- dates_hist_ext %>% 
+  dplyr::select(species, commonName, ext_date_min, ext_date_max, ext_date, Archip_10km, dist, ord) %>% 
+  # replicate dataframe 1000 times
+  dplyr::slice(rep(1:n(), each = 1000)) %>% 
+  # add run identifier
+  dplyr::mutate(run = rep(1:1000, n()/1000)) %>% 
+  # add uncertainty from uniform distribution
+  dplyr::mutate(ext_date = purrr::pmap(list(x = ext_date_min, y = ext_date_max), ~ runif(1, .x, .y))) %>% 
+  tidyr::unnest() %>% 
+  # convert to years before present
+  dplyr::mutate(pred_date = floor((1950 - ext_date)))
+
+# historic possibly extinct - 46 species
+hist_pex <- pex_orig %>% 
+  dplyr::filter(iucn == "CR" | iucn == "CR (PE)") %>% 
+  # extinction date in years BP
+  dplyr::mutate(pred_date = 1950 - year_last_recorded) %>% 
+  # average extinction probability
+  dplyr::mutate(prob_ext = 1 - rowMeans(dplyr::select(., p_records, p_threats))) %>% 
+  # distribution
+  dplyr::mutate(dist = "hist_un") %>% 
+  # order
+  dplyr::mutate(ord = ifelse(order == "Passeriformes", "pass", "np"))
+
+hist_pex_long <- hist_pex %>% 
+  # replicate dataframe 1000 times
+  dplyr::slice(rep(1:n(), each = 1000)) %>% 
+  # add run identifier
+  dplyr::mutate(run = rep(1:1000, n()/1000)) %>% 
+  # binomial probability of extinction
+  dplyr::mutate(pex = purrr::pmap(list(x = prob_ext), ~ rbinom(1, 1, .x))) %>% 
+  tidyr::unnest() %>%
+  dplyr::filter(pex == 1) %>% 
+  dplyr::select(species = binomial, commonName = common_name, Archip_10km, run, pred_date, dist, ord)
+
+# continental prehistoric extinct
+cont_pre <- dplyr::select(cont_all, species, commonName, Order, extinctionDate, date_prefix, prehistoric, ins.cat, islandName, Archip_10km) %>% 
+  # continental species
+  dplyr::filter(ins.cat == "continental") %>% 
+  # prehistoric extinct
+  dplyr::filter(prehistoric == 1)
+
+# rate - half-life of 1000 years
+rate_cont <- -log(0.5)/1000
+
+# point to truncate exponential - 90% of extinctions within 3322 years
+trunc_cont <- -log(1/10)/rate_cont
+
+# truncated exponential
+exp_trunc_cont <- rexp(10000000, rate = rate_cont)
+exp_trunc_cont <- exp_trunc_cont[exp_trunc_cont < trunc_cont]
+
+m <- 1000000
+x <- seq_along(exp_trunc_cont)
+exp_trunc_cont_split <- split(exp_trunc_cont, ceiling(x/m))
+
+# all but palearctic and indo-malay
+cont_pre_excl <- cont_pre %>% 
+  # excluding palearctic and indo-malay
+  dplyr::filter(!Archip_10km == "Palearctic" & !Archip_10km == "Indo-Malay") %>%
+  # order
+  dplyr::mutate(ord_pass = ifelse(Order == "Passeriformes", "pass", "np")) %>% 
+  # number of extinct non-passerines and passerines per archipelago
+  dplyr::count(Archip_10km, ord_pass) %>% 
+  tidyr::spread(ord_pass, n, fill = 0) %>% 
+  # colonization dates for continents
+  dplyr::left_join(colz_cont_orig, by = c("Archip_10km" = "Archip")) %>%
+  # replicate dataframe 1000 times
+  dplyr::slice(rep(1:n(), each = 1000)) %>% 
+  # add run identifier
+  dplyr::mutate(run = rep(1:1000, n()/1000)) %>% 
+  # human first arrival from uniform distribution of dates - archipelago level
+  dplyr::mutate(hum_unif = purrr::pmap(list(x = hum_upp, y = hum_low), ~ runif(1, .x, .y))) %>% 
+  tidyr::unnest() 
+
+cont_pre_excl_np_spid <- cont_pre %>% 
+  # excluding palearctic and indo-malay
+  dplyr::filter(!Archip_10km == "Palearctic" & !Archip_10km == "Indo-Malay") %>% 
+  dplyr::filter(Order != "Passeriformes") %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  dplyr::group_by(Archip_10km) %>% 
+  dplyr::mutate(sp_id = 1:n())
+
+cont_pre_excl_np <- cont_pre_excl %>% 
+  # create row for every non-passerine species
+  tidyr::uncount(np) %>% 
+  # extinction dates from truncated exponential - species level
+  dplyr::mutate(pred_date = hum_unif - exp_trunc_cont_split[[1]][1:n()]) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_kno") %>% 
+  # order
+  dplyr::mutate(ord = "np") %>% 
+  # add species names
+  dplyr::group_by(Archip_10km, run) %>% 
+  dplyr::mutate(sp_id = 1:n()) %>% 
+  dplyr::left_join(cont_pre_excl_np_spid, by = c("Archip_10km", "sp_id")) %>% 
+  dplyr::select(Archip_10km, run, hum_unif, pred_date, dist, ord, species, commonName)
+
+cont_pre_excl_pass_spid <- cont_pre %>% 
+  # excluding palearctic and indo-malay
+  dplyr::filter(!Archip_10km == "Palearctic" & !Archip_10km == "Indo-Malay") %>% 
+  dplyr::filter(Order == "Passeriformes") %>% 
+  # convert archipelago names to underscores
+  dplyr::mutate(Archip_10km = gsub(" ", "_", Archip_10km)) %>% 
+  dplyr::group_by(Archip_10km) %>% 
+  dplyr::mutate(sp_id = 1:n())
+
+cont_pre_excl_pass <- cont_pre_excl %>% 
+  # create row for every passerine species
+  tidyr::uncount(pass) %>% 
+  # extinction dates from truncated exponential - species level
+  dplyr::mutate(pred_date = hum_unif - exp_trunc_cont_split[[2]][1:n()]) %>% 
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(pred_date)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_kno") %>% 
+  # order
+  dplyr::mutate(ord = "pass") %>% 
+  # add species names
+  dplyr::group_by(Archip_10km, run) %>% 
+  dplyr::mutate(sp_id = 1:n()) %>% 
+  dplyr::left_join(cont_pre_excl_pass_spid, by = c("Archip_10km", "sp_id")) %>% 
+  dplyr::select(Archip_10km, run, hum_unif, pred_date, dist, ord, species, commonName)
+
+# palearctic and indo-malay
+# extinction date between maximum age of fossil and 1500 CE from uniform distribution - species level
+cont_pre_pal <- cont_pre %>% 
+  # only palearctic and indo-malay
+  dplyr::filter(Archip_10km == "Palearctic" | Archip_10km == "Indo-Malay") %>% 
+  # get extinction date from string
+  dplyr::rowwise() %>% 
+  dplyr::mutate(ext_numb_low = unlist(stringr::str_match_all(extinctionDate, "[0-9]+"))[1]) %>% 
+  dplyr::mutate(ext_numb_upp = unlist(stringr::str_match_all(extinctionDate, "[0-9]+"))[2]) %>% 
+  dplyr::mutate_at(vars(contains("ext_numb")), as.numeric) %>% 
+  as.data.frame() %>% 
+  # colonization dates for continents
+  dplyr::left_join(colz_cont_orig, by = c("Archip_10km" = "Archip")) %>%
+  # maximum date of fossil
+  dplyr::mutate(ext_date_min = purrr::pmap(list(x = ext_numb_low, y = hum_low), ~ min(.x, .y, na.rm = TRUE))) %>% 
+  tidyr::unnest() %>% 
+  # replicate dataframe 1000 times
+  dplyr::slice(rep(1:n(), each = 1000)) %>% 
+  # add run identifier
+  dplyr::mutate(run = rep(1:1000, n()/1000)) %>% 
+  # extinction date between maximum age of fossil and 1500 CE from uniform distribution - species level
+  dplyr::mutate(hum_unif = purrr::pmap(list(x = hum_upp, y = ext_date_min), ~ runif(1, .x, .y))) %>% 
+  tidyr::unnest() %>%
+  # round down to integer, i.e., year
+  dplyr::mutate(pred_date = floor(hum_unif)) %>% 
+  # distribution
+  dplyr::mutate(dist = "pre_kno") %>% 
+  # order
+  dplyr::mutate(ord = ifelse(Order == "Passeriformes", "pass", "np")) %>% 
+  # select useful columns
+  dplyr::select(Archip_10km, run, pred_date, dist, ord)
+
+# combine palearctic with other regions
+cont_pre_comb <- dplyr::bind_rows(cont_pre_excl_np, cont_pre_excl_pass, cont_pre_pal)
+
+# predicted prehistoric unrecorded and recorded extinctions - ~2000 spp
+ex_da_all <- ex_da %>% 
+  # add historic extinct with extinction dates - 183 spp
+  dplyr::bind_rows(dates_hist_ext_long) %>% 
+  # add historic extinct only recorded from fossils - 18 spp
+  dplyr::bind_rows(hist_ins) %>% 
+  # add possibly extinct species - ~25 spp
+  dplyr::bind_rows(hist_pex_long) %>% 
+  # add prehistoric continental extinctions - 98 spp
+  dplyr::bind_rows(cont_pre_comb) %>% 
+  # select useful columns
+  dplyr::select(Archip_10km, run, pred_date, dist, ord, species, commonName)
+
+
+
+# CODE FROM UNI COMPUTER
+
+
+
+# estimated species extinction dates
+
+sp_date <- ex_da_all %>% 
+  dplyr::group_by(species, commonName, Archip_10km) %>% 
+  dplyr::summarise_at(vars(pred_date), list(~median(.), ~sd(.))) %>% 
+  dplyr::filter(!is.na(species))
+```
+
+# DO I INCLUDE PLOTTING CODE? IGNORE OR INCLUDE IN SEPARATE SCRIPT?
