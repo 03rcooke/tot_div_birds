@@ -7,7 +7,6 @@ output: html_document
 
 ## Setup required packages
 
-#### devtools: install packages from github
 #### readr: read data
 #### dplyr: data manipulation
 #### tidyr: data manipulation
@@ -16,30 +15,28 @@ output: html_document
 #### jtools: model summary stats
 #### rsq: partial r2
 #### broom: model coefficients
+#### arm: posterior distribution of coefficients
 #### HDInterval: highest density intervals
-#### cowplot: plotting
-#### ggbeeswarm: plotting
-#### scatterpie: plotting
 #### zoo: rolling averages
-#### ggridges: plotting
 
 ```{r setup}
 if(!require("pacman")) install.packages("pacman")
-pacman::p_load(devtools, readr, dplyr, tidyr, tibble, purrr, jtools, rsq, broom, HDInterval, cowplot, MCMCglmm, zoo, ggbeeswarm, viridis, gganimate, scatterpie)
-
-#devtools::install_github("wilkelab/ggridges")
-library(ggridges)
-
-# set plotting theme
-theme_set(theme_cowplot())
+pacman::p_load(readr, dplyr, tidyr, tibble, purrr, jtools, rsq, broom, arm, HDInterval, zoo)
 ```
 
 ## Load in data
+# Spatial preprocessing code available upon request (03rcooke@gmail.com)
 
 ```{r data}
-# weigelt
+# Data S2. Recorded prehistoric non-passerines predictor data
+pred <- readr::read_csv("~/R/R_Projects/total_div/data/data_S1_pred.csv")
 
-# my prepared data
+# Data S3. Prehistoric non-passerine description dates
+# Data S4. Global passerine probability predictor data
+# Data S5. Archipelago upper bounds predictor data
+# Data S6. Bird extinction dates input data
+# Data S7. Human arrival dates
+
 ```
 
 ## Modelling
@@ -47,18 +44,10 @@ theme_set(theme_cowplot())
 #### transformations and standardization
 
 ```{r transform}
-pred_trans_unscaled <- pred %>% 
-  dplyr::mutate_at(vars(Dist, tot_area, SR_GAM, hum), log10) %>% 
-  dplyr::mutate(Elev = log10(Elev + 1)) %>% 
-  dplyr::mutate(sd_area = log10(sd_area + 1)) %>% 
-  dplyr::mutate(res_eff = log10(res_eff + 1)) %>% 
-  dplyr::mutate(ext_spp_np = log10(ext_spp_np + 1)) %>% 
-  dplyr::mutate(end_spp_np = log10(end_spp_np + 1)) %>% 
-  dplyr::mutate_at(vars(no_isl), sqrt) 
-
-pred_trans <- pred_trans_unscaled %>% 
-  dplyr::mutate_at(vars(-Archip_10km, -ext_spp_np), scale) %>% 
-  dplyr::mutate_at(vars(-Archip_10km, -ext_spp_np), as.numeric)
+# centered and scaled to zero mean and unit variance
+pred_trans <- pred %>% 
+  dplyr::mutate_at(vars(-Archip, -ext_spp_np), scale) %>% 
+  dplyr::mutate_at(vars(-Archip, -ext_spp_np), as.numeric)
 ```
 
 #### linear model of recorded prehistoric extinct non-passerines
@@ -69,23 +58,14 @@ m1 <- lm(ext_spp_np ~ Dist + SLMP + Elev + Temp + varT + Prec + varP + SRML + SR
 # model summary
 jtools::summ(m1)
 
-# R2 = 0.72
-# Adj R2 = 0.62
-
-# # plot residuals
-# plot(m1)
-
 # partial r2
-rq <- rsq::rsq.partial(m1, type = "sse", adj = FALSE) %>% 
+rq <- rsq::rsq.partial(m1, type = "sse") %>% 
   data.frame() %>% 
-  dplyr::bind_cols(data.frame(rsq.partial(m1, type = "sse", adj = TRUE))) %>% 
   dplyr::mutate(partial.rsq_round = round(partial.rsq, digits = 2))
 
+# coefficients
 coef_m1 <- broom::tidy(m1, conf.int = TRUE) %>% 
-  dplyr::filter(!term == "(Intercept)") %>% 
-  dplyr::mutate(pos_neg = as.factor(ifelse(estimate > 0, 2, 1))) %>% 
-  dplyr::left_join(rq, by = c("term" = "variable")) %>% 
-  dplyr::mutate(term_neat = c("Isolation distance", "Surrounding landmass", "Elevation", "Temperature", "Temperature variability", "Precipitation", "Precipitation variability", "Mainland plant richness", "Archipelago plant richness", "Number of islands", "Total area", "SD area", "Native rodents", "Endemic non-passerines", "Research effort", "Human arrival", "Total area:Research effort"))
+  dplyr::mutate(term_neat = c("Intercept", "Isolation distance", "Surrounding landmass", "Elevation", "Temperature", "Temperature variability", "Precipitation", "Precipitation variability", "Mainland plant richness", "Archipelago plant richness", "Number of islands", "Total area", "SD area", "Native rodents", "Endemic non-passerines", "Research effort", "Human arrival", "Total area:Research effort"))
 ```
 
 ## Extrapolate values
@@ -93,66 +73,64 @@ coef_m1 <- broom::tidy(m1, conf.int = TRUE) %>%
 ```{r extrapolate}
 # research effort in new zealand
 nz <- pred_trans %>% 
-  dplyr::filter(Archip_10km == "New_Zealand") %>% 
+  dplyr::filter(Archip == "New_Zealand") %>% 
   dplyr::select(res_eff)
 
-# extrapolate
-ar_extrap <- lapply(1:nrow(pred_trans), function(x) {
-  ar <- pred_trans[x,]$Archip_10km
+# 1,000 posterior draws for example (400,000 used for study)
+draw <- 100
+
+# draw the posterior coefficients
+post_coef <- arm::sim(m1, draw) %>%
+  .@coef %>%
+  as.data.frame()
+
+# extrapolate for each archipelago for each posterior sample
+pred_dist <- lapply(1:nrow(pred_trans), function(x) {
   
-  nd <- pred_trans %>% 
+  # archipelago
+  ar <- pred_trans[x,]$Archip
+  
+  # data for archipelago
+  nd <- pred_trans %>%
     dplyr::filter(Archip_10km == ar)
   
-  ext_spp_np <- nd$ext_spp_np
+  # recorded prehistoric extinct non-passerines
+  pre_spp_np <- nd$ext_spp_np
   
+  # delta research effort (compared to New Zealand)
   delta_res <- nz - nd$res_eff
   
-  ext_spp_np <- ext_spp_np + delta_res$res_eff * (as.vector(coef(m1)["res_eff"]) + as.vector(coef(m1)["tot_area:res_eff"]) * as.vector(coef(m1)["tot_area"]))
+  # for each posterior sample
+  out <- lapply(1:draw, function(b) {
+    
+    # total prehistoric extinct non-passerines
+    tot_spp_np <- pre_spp_np + delta_res$res_eff * (post_coef[["res_eff"]][b] + post_coef[["res_eff"]][b] * post_coef[["res_eff"]][b])
+    
+    # transform to natural scale
+    tot_spp_np <- (10 ^ tot_spp_np) - 1
+    
+    # subtract recorded prehistoric extinct non-passerines
+    ext_spp_np <- tot_spp_np - ((10 ^ pre_spp_np) - 1)
+    
+  })
+  
+  # extract data and tidy
+  out_df <- unlist(out) %>%
+    as.data.frame() %>%
+    setNames(ar)
+  
+  # print archipelago name - progress
+  print(ar)
+  
+  # return data
+  return(out_df)
   
 })
 
-# extrapolate upper confidence bound
-ar_extrap_upp <- lapply(1:nrow(pred_trans), function(x) {
-  ar <- pred_trans[x,]$Archip_10km
-  
-  nd <- pred_trans %>% 
-    dplyr::filter(Archip_10km == ar)
-  
-  ext_spp_np <- nd$ext_spp_np
-  
-  delta_res <- nz - nd$res_eff
-  
-  ext_spp_np <- ext_spp_np + delta_res$res_eff * (confint(m1, level = 0.99)["res_eff", 2] + confint(m1, level = 0.99)["tot_area:res_eff", 2] * confint(m1, level = 0.99)["tot_area", 2])
-  
-})
+# combine data
+pred_uni <- dplyr::bind_cols(pred_dist)
 
-# extrapolate lower confidence bound
-ar_extrap_low <- lapply(1:nrow(pred_trans), function(x) {
-  ar <- pred_trans[x,]$Archip_10km
-  
-  nd <- pred_trans %>% 
-    dplyr::filter(Archip_10km == ar)
-  
-  ext_spp_np <- nd$ext_spp_np
-  
-  delta_res <- nz - nd$res_eff
-  
-  ext_spp_np <- ext_spp_np + delta_res$res_eff * (confint(m1, level = 0.99)["res_eff", 1] + confint(m1, level = 0.99)["tot_area:res_eff", 1] * confint(m1, level = 0.99)["tot_area", 1])
-  
-  
-})
 
-ar_spp <- cbind(dplyr::select(pred, Archip_10km, ext_spp_np), ar_extrap = as.numeric(ar_extrap), ar_extrap_upp = as.numeric(ar_extrap_upp), ar_extrap_low = as.numeric(ar_extrap_low)) %>% 
-  # recorded and unrecorded prehistoric extinct
-  dplyr::mutate(ar_extrap = (10^ar_extrap)-1) %>%
-  # CI 99%
-  dplyr::mutate(ar_extrap_upp = (10^ar_extrap_upp)-1) %>%
-  dplyr::mutate(ar_extrap_low = (10^ar_extrap_low)-1) %>%
-  # unrecorded prehistoric extinct
-  dplyr::mutate(add_spp = ar_extrap - ext_spp_np) %>% 
-  # CI 99%
-  dplyr::mutate(add_spp_upp = ar_extrap_upp - ext_spp_np) %>%
-  dplyr::mutate(add_spp_low = ar_extrap_low - ext_spp_np)
 ```
 
 ## Ratio non-passerines to passerines
