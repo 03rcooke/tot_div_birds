@@ -1,7 +1,7 @@
 ---
 title: "tot_div_birds"
 author: "Robert S. C. Cooke (03rcooke@gmail.com)"
-date: "29/08/2019"
+date: "22/06/2020"
 output: html_document
 ---
 
@@ -18,48 +18,73 @@ output: html_document
 #### sp: spatial
 #### raster: spatial
 #### zoo: rolling averages
+#### HDInterval: highest (posterior) density intervals
 
 ```{r setup}
+
 if(!require("pacman")) install.packages("pacman")
-pacman::p_load(readr, dplyr, tidyr, purrr, jtools, rsq, broom, arm, sp, raster, zoo)
+pacman::p_load(readr, dplyr, tidyr, purrr, jtools, rsq, broom, arm, sp, raster, zoo, HDInterval)
+
 ```
 
 ## Raw data
 
-# 
+# island data
+# Weigelt et al., 2013 - https://www.pnas.org/content/110/38/15307
+
+# extinct birds data
+# Sayol et al., 2020
+
+# bird distributions
+# Bird species distribution maps of the world. Version 2018.1. - http://datazone.birdlife.org/species/requestdis
+
+# grid climatic data
+# WorldClim; Hijmans et al., 2005
+# Elevation; Farr, 2007
+
+# landmasses and archipelagos
+# GADM version 3.6 - gadm.org/data.html
+
+# human arrival dates
+# see references in 'colz'
+
+# extinction probabilites for possibly extinct species
+# Butchart et al., 2018
 
 ## Load in preprocessed data
 
-# Spatial preprocessing code available upon request (03rcooke@gmail.com)
+# Preprocessing code available upon request (03rcooke@gmail.com)
 
 ```{r}
+
 # Data S2. Recorded prehistoric non-passerines predictor data
 pred <- readr::read_csv("~/R/R_Projects/total_div/data/data_S2_pred.csv")
-# Archip = Archipelago, Dist = Isolation distance, SLMP = Surrounding landmass, Elev = Elevation, Temp = Temperature, Prec = Precipitation, varT = Temperature variability, varP = Precipitation variability, SR_GAM = Archipelago plant richness, SRML = Mainland plant richness, no_isl = Number of islands, tot_area = Total area, sd_area = SD area, pa_rodents = Native rodents, hum = Human arrival, end_spp_np = Endemic non-passerines, res_eff = Research effort, rec_pre_np = Recorded prehistoric non-passerines, rec_pre_pass = Recorded prehistoric passerines, ant_spp_np = Non-passerines extant at 1500 CE (extant and historic extinct), ant_spp_pass = Passerines extant at 1500 CE (table S1)
+# Archip = Archipelago; Dist = Isolation distance; SLMP = Surrounding landmass; Elev = Elevation; Temp = Temperature; Prec = Precipitation; varT = Temperature variability; varP = Precipitation variability; SR_GAM = Archipelago plant richness; SRML = Mainland plant richness; no_isl = Number of islands; tot_area = Total area; sd_area = SD area; pa_rodents = Native rodents; hum = Human arrival; end_spp_np = Endemic non-passerines; res_eff = Research effort; rec_pre_np = Recorded prehistoric non-passerines; rec_pre_pass = Recorded prehistoric passerines; ant_spp_np = Non-passerines extant at 1500 CE (extant and historic extinct); ant_spp_pass = Passerines extant at 1500 CE (table S1)
 
-# Data S3. Prehistoric non-passerine description dates
-descr <- readr::read_csv("~/R/R_Projects/total_div/data/data_S3_descr.csv")
-# species = Species name, ref.date = Reference for date, authority = Taxonomic authority, described = Year of description
+# Data S4. Prehistoric non-passerine description dates
+descr <- readr::read_csv("~/R/R_Projects/total_div/data/data_S4_descr.csv")
+# species = Species name; ref.date = Reference for date; authority = Taxonomic authority; described = Year of description
 
-# Data S4. Global passerine probability predictor data
-pass <- readr::read_csv("~/R/R_Projects/total_div/data/data_S4_pass.csv")
-# x = Longitude, y = Latitude, Elev = Elevation, Temp = Temperature, Prec = Precipitation, varT = Temperature variability, varP = Precipitation variability, prop_x = Surrounding landmass proportion with a neighborhood of size x, np_spp = Number of non-passerines, pass_spp = Number of passerines
+# Data S5. Global passerine probability predictor data
+pass <- readr::read_csv("~/R/R_Projects/total_div/data/data_S5_pass.csv")
+# x = Longitude; y = Latitude; Elev = Elevation; Temp = Temperature; Prec = Precipitation; varT = Temperature variability; varP = Precipitation variability; prop_x = Surrounding landmass proportion with a neighborhood of size x; np_spp = Number of non-passerines; pass_spp = Number of passerines
   
-# Data S5. Archipelago predictor data
-dri_arch <- readr::read_csv("~/R/R_Projects/total_div/data/data_S5_dri_arch.csv")
-# Archip = Archipelago, Elev = Elevation, Temp = Temperature, Prec = Precipitation, varT = Temperature variability, varP = Precipitation variability, prop_x = Surrounding landmass proportion with a neighborhood of size x
+# Data S6. Archipelago predictor data
+dri_arch <- readr::read_csv("~/R/R_Projects/total_div/data/data_S6_dri_arch.csv")
+# Archip = Archipelago; Elev = Elevation; Temp = Temperature; Prec = Precipitation; varT = Temperature variability; varP = Precipitation variability; prop_x = Surrounding landmass proportion with a neighborhood of size x
 
-# Data S6. Upper bound predictor data
-upp <- readr::read_csv("~/R/R_Projects/total_div/data/data_S6_upp.csv")
-# x = Longitude, y = Latitude, Elev = Elevation, Temp = Temperature, Prec = Precipitation, varT = Temperature variability, varP = Precipitation variability, np_spp = Number of non-passerines, pass_spp = Number of passerines, all_spp = Number of non-passerines and passerines
+# Data S7. Upper bound predictor data
+upp <- readr::read_csv("~/R/R_Projects/total_div/data/data_S7_upp.csv")
+# x = Longitude; y = Latitude; Elev = Elevation; Temp = Temperature; Prec = Precipitation; varT = Temperature variability; varP = Precipitation variability; np_spp = Number of non-passerines; pass_spp = Number of passerines; all_spp = Number of non-passerines and passerines
 
-# Data S7. Human arrival dates
-colz <- readr::read_csv("~/R/R_Projects/total_div/data/data_S7_colz.csv")
-# Archip = Region, prehist = Prehistorically settled (i.e., pre-1500 CE), cont = Continental, hum = Central human arrival date estimate (years before present), hum_low = Lower estimate of human arrival date (years before present), hum_upp = Upper estimate of human arrival date (years before present), ref = Reference, full_ref = Full reference 
+# Data S8. Human arrival dates
+colz <- readr::read_csv("~/R/R_Projects/total_div/data/data_S8_colz.csv")
+# Archip = Region; prehist = Prehistorically settled (i.e., pre-1500 CE); cont = Continental; hum = Central human arrival date estimate (years before present); hum_low = Lower estimate of human arrival date (years before present); hum_upp = Upper estimate of human arrival date (years before present); ref = Reference; full_ref = Full reference 
 
-# Data S8. Bird extinction dates input data
-bird <- readr::read_csv("~/R/R_Projects/total_div/data/data_S8_bird.csv")
-# species = , common = , order = , mod_date = , insular = , ext_date_min = , ext_date_max = , ext_date = , p_records = , p_threats = , fossil_max = , fossil_min = , Archip = Archipelago
+# Data S9. Bird extinction dates input data
+bird <- readr::read_csv("~/R/R_Projects/total_div/data/data_S9_bird.csv")
+# species = Species name; common = Common name; order = Order; mod_date = 0 (prehistoric), 1 (historic), 2 (possibly extinct); insular = focal (focal archipelagos; fig. S2), insular (archipelagos), continental (continental); ext_date_min = Minimum extinction date; ext_date_max = Maximum extinction date; ext_date = Central extinction date; p_records = Extinction probability based on records for possibly extinct species; p_threats = Extinction probability based on threats for possibly extinct species; fossil_max = Maximum age of fossil; fossil_min = Minimum age of fossil; Archip = Archipelago
+
 ```
 
 ## Modelling
@@ -80,11 +105,13 @@ pred_t <- pred %>%
 pred_ts <- pred_t %>% 
   dplyr::mutate_at(vars(-Archip, -rec_pre_np), scale) %>% 
   dplyr::mutate_at(vars(-Archip, -rec_pre_np), as.numeric)
+
 ```
 
 #### linear model of recorded prehistoric extinct non-passerines
 
 ```{r}
+
 m1 <- lm(rec_pre_np ~ Dist + SLMP + Elev + Temp + varT + Prec + varP + SRML + SR_GAM + no_isl + tot_area + sd_area + pa_rodents + end_spp_np + res_eff + hum + tot_area:res_eff, data = pred_ts)
 
 # model summary
@@ -95,11 +122,13 @@ coef <- rsq::rsq.partial(m1, type = "sse") %>%
   data.frame() %>% 
   dplyr::mutate(partial.rsq_round = round(partial.rsq, digits = 2)) %>% 
   dplyr::full_join(broom::tidy(m1, conf.int = TRUE), by = c("variable" = "term"))
+
 ```
 
 ## Extrapolate values
 
-```{r extrapolate}
+```{r}
+
 # research effort in new zealand
 nz <- pred_ts %>% 
   dplyr::filter(Archip == "New_Zealand") %>% 
@@ -158,6 +187,7 @@ pred_dist <- lapply(1:nrow(pred_ts), function(x) {
 
 # combine data across archipelagos
 pred_uni <- dplyr::bind_cols(pred_dist)
+
 ```
 
 ## Lower bound - species description curve
@@ -271,6 +301,7 @@ low_samp <- res[11:nrow(res),] %>%
   # subtract described species from describable species to get undescribed species
   dplyr::mutate(low_spp = LA - sum(dates_descr$n)) %>%
   dplyr::mutate(dist = "low")
+
 ```
 
 ## Lower bound rejection sampling
@@ -299,8 +330,6 @@ print(nrow(pred_uni_tot)); print(nrow(pred_acc))
 ## Ratio non-passerines to passerines
 
 ```{r}
-# number of cells
-nrow(pass)
 
 # transformations
 pass_t <- pass %>% 
@@ -319,6 +348,9 @@ pr1 <- glm(cbind(pass_spp, np_spp) ~ Elev + Temp + Prec + varT + varP + prop_5, 
 
 # model summary
 jtools::summ(pr1)
+
+# AICc
+qpcR::AICc(pr1)
 
 # RAC model (autocovariate derived from residuals of model with environmental predictors)
 
@@ -435,14 +467,12 @@ pp_df <- function(x) {
 # undiscovered prehistoric non-passerines and passerines per archipelago
 # running time ~20 minutes
 pp <- lapply(1:nrow(pass_pred), pp_df)
+
 ```
 
 ## Upper bound
 
 ```{r}
-
-# number of cells
-nrow(upp)
 
 # transformations
 upp_t <- upp %>% 
@@ -604,6 +634,7 @@ nz_run <- data.frame(Archip = rep("New_Zealand", down), run = 1:down, ext_np_spp
 
 # add New Zealand to data
 ex <- dplyr::bind_rows(ex, nz_run)
+
 ```
 
 #### Extinction chronology
@@ -976,14 +1007,13 @@ ex_da_all <- ex_da %>% # predicted prehistoric unrecorded and recorded extinctio
   # BCE/CE
   dplyr::mutate(pred_date_ce = 1950 - pred_date)
 
+# SEE data S10 for the ex_da_all produced in this study
+
 ```
 
 #### Extinction rate
 
 ```{r}
-
-ptm <- proc.time()
-proc.time() - ptm
 
 # extinction rate through time for individual runs
 ex_da_years_all <- ex_da_all %>%
@@ -1019,6 +1049,8 @@ ex_da_years_sum <- ex_da_years_all %>%
   # BCE/CE
   dplyr::mutate(pred_date_ce = 1950 - pred_date)
 
+# SEE data S11 for the ex_da_years_sum produced in this study
+
 # cumulative extinctions
 ex_da_years_cum <- ex_da_years_all %>%
   # group by year
@@ -1036,11 +1068,41 @@ sp_date <- ex_da_all %>%
   # BCE/CE
   dplyr::mutate(median_ce = 1950 - median)
 
+# SEE data S12 for the sp_date produced in this study
+
 ```
 
 #### Totals
 
 ```{r}
+
+## Example totals ##
+
+# easy to separate different groups using dist and ord
+# dist = pre_un (undiscovered prehistoric extinct); pre_kno (recorded prehistoric extinct); hist_kno (recorded historic extinct); hist_un (possibly historic extinct)
+# ord = np (non-passerines); pass (passerines)
+
+## total
+
+total <- ex_da_all %>%
+  dplyr::count(run)
+
+# median
+tot <- median(total$n)
+# HDI
+tot_hdi <- HDInterval::hdi(total$n, credMass = 0.95)
+
+## undiscovered
+
+# undiscovered extinct birds per run (1,000 runs used in study)
+pre_undis <- ex_da_all %>%
+  dplyr::filter(dist == "pre_un") %>% 
+  dplyr::count(run)
+
+# median
+un <- median(pre_undis$n)
+# HDI
+un_hdi <- HDInterval::hdi(pre_undis$n, credMass = 0.95)
 
 ```
 
